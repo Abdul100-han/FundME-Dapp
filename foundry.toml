@@ -1,0 +1,27 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+script = "script"
+
+# Gas-optimized compilation profile
+optimizer = true
+optimizer_runs = 20_000
+
+# Explicit remappings for dependencies and future imports
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+]
+auto_detect_remappings = true
+
+# Detailed build metadata for verification, tooling, and deployment pipelines
+build_info = true
+extra_output = ["metadata", "storageLayout", "devdoc", "userdoc", "abi", "evm.bytecode", "evm.deployedBytecode", "evm.methodIdentifiers"]
+extra_output_files = ["metadata"]
+
+[rpc_endpoints]
+sepolia = "${SEPOLIA_RPC_URL}"
+
+[etherscan]
+sepolia = { key = "${ETHERSCAN_API_KEY}" }
