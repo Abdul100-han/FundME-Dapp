@@ -80,17 +80,19 @@ contract Campaign {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Deploys a new crowdfunding campaign.
+    /// @param creator Address recorded as the campaign owner (factory passes the end-user caller).
     /// @param targetAmountUsd Funding goal in USD with 8 decimals (e.g. $5,000.00 => 5000e8).
     /// @param minimumContributionUsd Minimum per-transaction contribution in USD with 8 decimals.
     /// @param duration Campaign lifetime in seconds after deployment.
     /// @param priceFeed Address of the Chainlink ETH/USD AggregatorV3 feed.
     constructor(
+        address creator,
         uint256 targetAmountUsd,
         uint256 minimumContributionUsd,
         uint256 duration,
         address priceFeed
     ) {
-        i_creator = msg.sender;
+        i_creator = creator;
         i_targetAmountUsd = targetAmountUsd;
         i_minimumContributionUsd = minimumContributionUsd;
         i_duration = duration;
