@@ -17,6 +17,17 @@ contract Campaign {
         uint128 usdAmount;
     }
 
+    /// @notice Milestone proposal tracked for contributor-weighted governance.
+    /// @dev Vote participation is tracked separately in `s_milestoneVotes` to avoid nested mappings in arrays.
+    struct Milestone {
+        string description;
+        uint256 amountRequested;
+        uint256 votesFor;
+        uint256 votesAgainst;
+        uint256 votingDeadline;
+        bool executed;
+    }
+
     /*//////////////////////////////////////////////////////////////
                             CUSTOM ERRORS
     //////////////////////////////////////////////////////////////*/
@@ -29,6 +40,19 @@ contract Campaign {
     error Campaign__TransferFailed();
     error Campaign__InvalidPrice();
     error Campaign__StalePriceFeed();
+    error Campaign__NotCreator();
+    error Campaign__GoalNotMet();
+    error Campaign__CampaignStillActive();
+    error Campaign__InvalidMilestone();
+    error Campaign__AlreadyVoted();
+    error Campaign__VotingClosed();
+    error Campaign__NoVotingWeight();
+    error Campaign__VotingStillActive();
+    error Campaign__MilestoneNotPassed();
+    error Campaign__MilestoneAlreadyExecuted();
+    error Campaign__InsufficientFunds();
+    error Campaign__InvalidVotingDuration();
+    error Campaign__InvalidMilestoneAmount();
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -39,6 +63,15 @@ contract Campaign {
     /// @param amountEth The amount of ETH contributed, in wei.
     /// @param amountUsd The USD value credited at funding time, with 8 decimals.
     event Funded(address indexed contributor, uint256 amountEth, uint256 amountUsd);
+
+    /// @notice Emitted when the creator proposes a new milestone.
+    event MilestoneProposed(uint256 indexed milestoneId, string description, uint256 amountRequested, uint256 votingDeadline);
+
+    /// @notice Emitted when a contributor casts a weighted vote on a milestone.
+    event MilestoneVoted(uint256 indexed milestoneId, address indexed voter, bool support, uint256 weight);
+
+    /// @notice Emitted when a passed milestone releases ETH to the creator.
+    event MilestoneExecuted(uint256 indexed milestoneId, address indexed creator, uint256 amountReleased);
 
     /*//////////////////////////////////////////////////////////////
                             STATE VARIABLES
@@ -74,6 +107,24 @@ contract Campaign {
 
     /// @notice Tracks each contributor's ETH and USD balances in one slot per address.
     mapping(address => Contribution) private s_contributions;
+
+    /// @notice Append-only registry of milestone proposals for post-funding governance.
+    Milestone[] public s_milestones;
+
+    /// @notice Tracks whether an address has voted on a specific milestone (milestoneId => voter => voted).
+    mapping(uint256 => mapping(address => bool)) public s_milestoneVotes;
+
+    /*//////////////////////////////////////////////////////////////
+                               MODIFIERS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Restricts access to the campaign creator.
+    modifier onlyCreator() {
+        if (msg.sender != i_creator) {
+            revert Campaign__NotCreator();
+        }
+        _;
+    }
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
@@ -157,6 +208,122 @@ contract Campaign {
         if (!success) {
             revert Campaign__TransferFailed();
         }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        MILESTONE GOVERNANCE
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Proposes a milestone for contributor voting after a successful campaign concludes.
+    /// @param _description Human-readable summary of the milestone deliverable.
+    /// @param _amountRequested ETH amount in wei requested for this milestone.
+    /// @param _votingDuration Voting window in seconds, measured from proposal time.
+    function proposeMilestone(
+        string calldata _description,
+        uint256 _amountRequested,
+        uint256 _votingDuration
+    ) external onlyCreator {
+        if (!isGoalMet()) {
+            revert Campaign__GoalNotMet();
+        }
+        if (!hasDeadlinePassed()) {
+            revert Campaign__CampaignStillActive();
+        }
+        if (_amountRequested == 0) {
+            revert Campaign__InvalidMilestoneAmount();
+        }
+        if (_votingDuration == 0) {
+            revert Campaign__InvalidVotingDuration();
+        }
+        if (bytes(_description).length == 0) {
+            revert Campaign__InvalidMilestone();
+        }
+
+        uint256 milestoneId = s_milestones.length;
+        uint256 votingDeadline = block.timestamp + _votingDuration;
+
+        s_milestones.push(
+            Milestone({
+                description: _description,
+                amountRequested: _amountRequested,
+                votesFor: 0,
+                votesAgainst: 0,
+                votingDeadline: votingDeadline,
+                executed: false
+            })
+        );
+
+        emit MilestoneProposed(milestoneId, _description, _amountRequested, votingDeadline);
+    }
+
+    /// @notice Casts a weighted vote on an active milestone using the caller's funded ETH balance.
+    /// @param _milestoneId Index of the milestone in `s_milestones`.
+    /// @param _support True to vote in favor; false to vote against.
+    function voteOnMilestone(uint256 _milestoneId, bool _support) external {
+        if (_milestoneId >= s_milestones.length) {
+            revert Campaign__InvalidMilestone();
+        }
+
+        Milestone storage milestone = s_milestones[_milestoneId];
+
+        if (block.timestamp > milestone.votingDeadline) {
+            revert Campaign__VotingClosed();
+        }
+        if (s_milestoneVotes[_milestoneId][msg.sender]) {
+            revert Campaign__AlreadyVoted();
+        }
+
+        uint256 votingWeight = s_contributions[msg.sender].ethAmount;
+        if (votingWeight == 0) {
+            revert Campaign__NoVotingWeight();
+        }
+
+        s_milestoneVotes[_milestoneId][msg.sender] = true;
+
+        if (_support) {
+            milestone.votesFor += votingWeight;
+        } else {
+            milestone.votesAgainst += votingWeight;
+        }
+
+        emit MilestoneVoted(_milestoneId, msg.sender, _support, votingWeight);
+    }
+
+    /// @notice Releases milestone funds to the creator after a successful contributor vote.
+    /// @param _milestoneId Index of the milestone in `s_milestones`.
+    /// @dev Follows Checks-Effects-Interactions: marks executed before the ETH transfer.
+    function executeMilestone(uint256 _milestoneId) external onlyCreator {
+        if (_milestoneId >= s_milestones.length) {
+            revert Campaign__InvalidMilestone();
+        }
+
+        Milestone storage milestone = s_milestones[_milestoneId];
+
+        if (milestone.executed) {
+            revert Campaign__MilestoneAlreadyExecuted();
+        }
+        if (block.timestamp <= milestone.votingDeadline) {
+            revert Campaign__VotingStillActive();
+        }
+        if (milestone.votesFor <= milestone.votesAgainst) {
+            revert Campaign__MilestoneNotPassed();
+        }
+
+        uint256 amountToRelease = milestone.amountRequested;
+        if (address(this).balance < amountToRelease) {
+            revert Campaign__InsufficientFunds();
+        }
+
+        // Effects — prevent reentrancy before external transfer
+        milestone.executed = true;
+
+        // Interaction
+        (bool success,) = payable(i_creator).call{value: amountToRelease}("");
+        if (!success) {
+            revert Campaign__TransferFailed();
+        }
+
+        emit MilestoneExecuted(_milestoneId, i_creator, amountToRelease);
     }
 
     /*//////////////////////////////////////////////////////////////

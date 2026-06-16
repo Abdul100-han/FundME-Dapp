@@ -18,3 +18,9 @@ docs/
 .env
 .env.*
 !.env.example
+
+# Foundry
+lib/forge-std/cache/
+lib/forge-std/out/
+lib/forge-std/.vscode
+lib/forge-std/.idea
